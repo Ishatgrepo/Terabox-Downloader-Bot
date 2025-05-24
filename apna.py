@@ -14,7 +14,7 @@ from datetime import datetime # Added for elapsed time calculation
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.constants import ParseMode
-from telegram.error import RetryAfter # For FloodWait equivalent
+from telegram.error import RetryAfter # Changed from FloodControl
 
 try:
     import aria2p # For aria2c RPC
@@ -90,24 +90,34 @@ def initialize_aria2():
 
     try:
         logger.info(f"Attempting to connect to Aria2 RPC server at {ARIA2_RPC_HOST}:{ARIA2_RPC_PORT}")
-        current_aria2_client = aria2p.API(
-            aria2p.Client(
-                host=ARIA2_RPC_HOST,
-                port=ARIA2_RPC_PORT,
-                secret=ARIA2_RPC_SECRET
-            )
+        # Instantiate the client first
+        low_level_client = aria2p.Client(
+            host=ARIA2_RPC_HOST,
+            port=ARIA2_RPC_PORT,
+            secret=ARIA2_RPC_SECRET
         )
-        version_info = current_aria2_client.get_version()
-        stats = current_aria2_client.get_stats()
+        # Then pass it to the API wrapper
+        current_aria2_api_wrapper = aria2p.API(low_level_client)
+        
+        # Call methods on the low_level_client or the api_wrapper if available
+        # Based on the error, get_version is likely on the client, not the API wrapper directly.
+        version_info = low_level_client.get_version() 
+        stats = low_level_client.get_stats()
+
         ARIA2_VERSION_STR = version_info.version if version_info else "Unknown"
         logger.info(f"Successfully connected to Aria2 RPC server. Version: {ARIA2_VERSION_STR}, "
                     f"Features: {version_info.enabled_features if version_info else 'N/A'}, "
                     f"Stats: {stats.num_active} active / {stats.num_waiting} waiting / {stats.num_stopped} stopped.")
         
         logger.info(f"Setting Aria2c global options: {ARIA2_GLOBAL_OPTIONS}")
-        current_aria2_client.set_global_options(ARIA2_GLOBAL_OPTIONS)
+        # Global options are typically set via the API wrapper if it supports it, or client
+        current_aria2_api_wrapper.set_global_options(ARIA2_GLOBAL_OPTIONS) # API wrapper usually handles this
         logger.info("Aria2c global options set successfully.")
-        aria2_client = current_aria2_client # Assign to global only on full success
+        aria2_client = current_aria2_api_wrapper # Assign the API wrapper to the global variable
+    except AttributeError as ae:
+        logger.error(f"AttributeError during Aria2 initialization: {ae}. This might indicate an issue with the aria2p library version or methods.")
+        aria2_client = None
+        ARIA2_VERSION_STR = "Error"
     except Exception as e:
         logger.error(f"Could not connect to Aria2 RPC server or set options at {ARIA2_RPC_HOST}:{ARIA2_RPC_PORT}. "
                      f"Ensure aria2c is running in daemon mode with RPC enabled. Error: {e}")
@@ -577,14 +587,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === Robust Status Message Updater ===
 async def update_tg_status_message(status_msg_obj, text_to_send, parse_mode_val=ParseMode.MARKDOWN):
-    """Safely updates a Telegram message, handling RetryAfter."""
+    """Safely updates a Telegram message, handling FloodControl."""
     if status_msg_obj.text == text_to_send: # Avoid editing if text is the same
         return
     while True:
         try:
             await status_msg_obj.edit_text(text_to_send, parse_mode=parse_mode_val)
             break 
-        except RetryAfter as e:
+        except RetryAfter as e: # Catching RetryAfter
             logger.warning(f"Flood control: waiting for {e.retry_after} seconds before retrying status update.")
             await asyncio.sleep(e.retry_after)
         except Exception as e:
