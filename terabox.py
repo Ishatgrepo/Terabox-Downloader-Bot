@@ -172,26 +172,9 @@ async def handle_message(client: Client, message: Message):
         return
 
     encoded_url = urllib.parse.quote(url)
-    api_urls = [
-        f"https://teradlrobot.cheemsbackup.workers.dev/?url={encoded_url}",
-        f"https://teraboxdl.tellycloudapi.workers.dev/?url={encoded_url}"
-    ]
+    final_url = f"https://teraboxdl.tellycloudapi.workers.dev/?url={encoded_url}"
 
-    download = None
-    for api_url in api_urls:
-        try:
-            download = aria2.add_uris([api_url])
-            logger.info(f"Using API URL: {api_url}")
-            break
-        except Exception as e:
-            logger.warning(f"Failed to use API URL {api_url}: {e}")
-            if api_url == api_urls[-1]:
-                await message.reply_text("All API URLs failed. Please try again later.")
-                return
-    
-    if not download:
-        return
-
+    download = aria2.add_uris([final_url])
     status_message = await message.reply_text("sᴇɴᴅɪɴɢ ʏᴏᴜ ᴛʜᴇ ᴍᴇᴅɪᴀ...🤤")
 
     start_time = datetime.now()
