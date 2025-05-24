@@ -98,7 +98,7 @@ last_update_time = 0
 async def is_user_member(client, user_id):
     try:
         member = await client.get_chat_member(FSUB_ID, user_id)
-        if member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+        if member.status in [ChatMemberStatus.MEMBER, Chat mintedStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
             return True
         else:
             return False
@@ -173,8 +173,14 @@ async def handle_message(client: Client, message: Message):
 
     encoded_url = urllib.parse.quote(url)
     final_url = f"https://teradlrobot.cheemsbackup.workers.dev/?url={encoded_url}"
+    fallback_url = f"https://teraboxdl.tellycloudapi.workers.dev/?url={encoded_url}"
 
-    download = aria2.add_uris([final_url])
+    try:
+        download = aria2.add_uris([final_url])
+    except Exception as e:
+        logger.warning(f"Primary URL failed: {e}. Trying fallback URL...")
+        download = aria2.add_uris([fallback_url])
+    
     status_message = await message.reply_text("sᴇɴᴅɪɴɢ ʏᴏᴜ ᴛʜᴇ ᴍᴇᴅɪᴀ...🤤")
 
     start_time = datetime.now()
@@ -240,7 +246,7 @@ async def handle_message(client: Client, message: Message):
             f"┠ [{'★' * int(progress / 10)}{'☆' * (10 - int(progress / 10))}] {progress:.2f}%\n"
             f"┠ ᴘʀᴏᴄᴇssᴇᴅ: {format_size(current)} ᴏғ {format_size(total)}\n"
             f"┠ sᴛᴀᴛᴜs: 📤 Uploading to Telegram\n"
-            f"┠ ᴇɴɢɪɴᴇ: <b><u>PyroFork v2.2.11</u></b>\n"
+            f"┠ ᴇɴɢɪɴᴇ: <b><u>PyrousFork v2.2.11</u></b>\n"
             f"┠ sᴘᴇᴇᴅ: {format_size(current / elapsed_time.seconds if elapsed_time.seconds > 0 else 0)}/s\n"
             f"┠ ᴇʟᴀᴘsᴇᴅ: {elapsed_minutes}m {elapsed_seconds}s\n"
             f"┖ ᴜsᴇʀ: <a href='tg://user?id={user_id}'>{message.from_user.first_name}</a> | ɪᴅ: {user_id}\n"
