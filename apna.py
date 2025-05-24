@@ -988,4 +988,3 @@ if __name__ == "__main__":
     # For now, handle_terabox_link re-calculates it, which is fine.
     
     run_bot()
-" in the Canv
