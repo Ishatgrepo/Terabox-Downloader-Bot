@@ -14,7 +14,7 @@ from datetime import datetime # Added for elapsed time calculation
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.constants import ParseMode
-from telegram.error import RetryAfter # Changed from FloodControl
+from telegram.error import RetryAfter 
 
 try:
     import aria2p # For aria2c RPC
@@ -34,15 +34,16 @@ ARIA2_RPC_HOST = os.getenv("ARIA2_RPC_HOST", "http://localhost")
 ARIA2_RPC_PORT = int(os.getenv("ARIA2_RPC_PORT", 6800))
 ARIA2_RPC_SECRET = os.getenv("ARIA2_RPC_SECRET", "") 
 ARIA2_ENABLED = os.getenv("ARIA2_ENABLED", "true").lower() == "true"
-ARIA2_GLOBAL_OPTIONS = { # Options from the example
+ARIA2_GLOBAL_OPTIONS = { 
     "max-tries": "50",
     "retry-wait": "3",
     "continue": "true",
     "allow-overwrite": "true",
     "min-split-size": "4M",
     "split": "10",
-    # "max-connection-per-server": "16", # Default is 1, can be increased
-    # "max-concurrent-downloads": "5",   # Default is 5
+    "max-connection-per-server": "16", # Increased from default 1
+    "max-concurrent-downloads": "10",  # Increased from default 5
+    "optimize-concurrent-downloads": "true",
 }
 
 
@@ -50,7 +51,7 @@ ARIA2_GLOBAL_OPTIONS = { # Options from the example
 DUMP_CHANNEL_ID = None
 FORCE_SUB_CHANNEL_ID = None 
 aria2_client = None
-ARIA2_VERSION_STR = "N/A" # To store Aria2c version
+ARIA2_VERSION_STR = "N/A" 
 
 def _initialize_config():
     global DUMP_CHANNEL_ID, FORCE_SUB_CHANNEL_ID
@@ -90,39 +91,48 @@ def initialize_aria2():
 
     try:
         logger.info(f"Attempting to connect to Aria2 RPC server at {ARIA2_RPC_HOST}:{ARIA2_RPC_PORT}")
-        # Instantiate the client first
         low_level_client = aria2p.Client(
             host=ARIA2_RPC_HOST,
             port=ARIA2_RPC_PORT,
             secret=ARIA2_RPC_SECRET
         )
-        # Then pass it to the API wrapper
+        # The API wrapper is still useful for managing downloads (add_uris, etc.)
         current_aria2_api_wrapper = aria2p.API(low_level_client)
         
-        # Call methods on the low_level_client or the api_wrapper if available
-        # Based on the error, get_version is likely on the client, not the API wrapper directly.
-        version_info = low_level_client.get_version() 
-        stats = low_level_client.get_stats()
+        # Use direct RPC calls for version and stats as a more robust method
+        logger.info("Attempting direct RPC call for aria2.getVersion")
+        version_data = low_level_client.call("aria2.getVersion")
+        logger.info(f"aria2.getVersion response: {version_data}")
+        
+        logger.info("Attempting direct RPC call for aria2.getGlobalStat")
+        stats_data = low_level_client.call("aria2.getGlobalStat")
+        logger.info(f"aria2.getGlobalStat response: {stats_data}")
 
-        ARIA2_VERSION_STR = version_info.version if version_info else "Unknown"
+        ARIA2_VERSION_STR = version_data.get("version", "Unknown")
+        enabled_features = version_data.get("enabledFeatures", [])
+        
+        active_downloads = stats_data.get("numActive", "N/A")
+        waiting_downloads = stats_data.get("numWaiting", "N/A")
+        stopped_downloads = stats_data.get("numStopped", "N/A") # numStoppedTotal might also be available
+
         logger.info(f"Successfully connected to Aria2 RPC server. Version: {ARIA2_VERSION_STR}, "
-                    f"Features: {version_info.enabled_features if version_info else 'N/A'}, "
-                    f"Stats: {stats.num_active} active / {stats.num_waiting} waiting / {stats.num_stopped} stopped.")
+                    f"Features: {enabled_features}, "
+                    f"Stats: {active_downloads} active / {waiting_downloads} waiting / {stopped_downloads} stopped.")
         
         logger.info(f"Setting Aria2c global options: {ARIA2_GLOBAL_OPTIONS}")
-        # Global options are typically set via the API wrapper if it supports it, or client
-        current_aria2_api_wrapper.set_global_options(ARIA2_GLOBAL_OPTIONS) # API wrapper usually handles this
+        current_aria2_api_wrapper.set_global_options(ARIA2_GLOBAL_OPTIONS)
         logger.info("Aria2c global options set successfully.")
-        aria2_client = current_aria2_api_wrapper # Assign the API wrapper to the global variable
-    except AttributeError as ae:
-        logger.error(f"AttributeError during Aria2 initialization: {ae}. This might indicate an issue with the aria2p library version or methods.")
+        aria2_client = current_aria2_api_wrapper
+    except aria2p.client.ClientException as ce:
+        logger.error(f"Aria2 ClientException during initialization: {ce}. This often indicates a connection or authentication issue with the Aria2 RPC server.")
         aria2_client = None
-        ARIA2_VERSION_STR = "Error"
+        ARIA2_VERSION_STR = "Error (ClientEx)"
     except Exception as e:
         logger.error(f"Could not connect to Aria2 RPC server or set options at {ARIA2_RPC_HOST}:{ARIA2_RPC_PORT}. "
-                     f"Ensure aria2c is running in daemon mode with RPC enabled. Error: {e}")
+                     f"Ensure aria2c is running in daemon mode with RPC enabled. Error: {e}", exc_info=True)
         aria2_client = None
-        ARIA2_VERSION_STR = "Error"
+        ARIA2_VERSION_STR = "Error (Conn/Other)"
+
 
 # === Logging Setup ===
 logging.basicConfig(
@@ -154,7 +164,7 @@ class DirectDownloadLinkException(Exception):
     """Custom exception for direct download link errors."""
     pass
 
-# === Terabox Link Fetching Logic (Remains the same) ===
+# === Terabox Link Fetching Logic ===
 def fetch_terabox_links(input_url: str):
     """
     Fetches direct download links from a Terabox URL.
@@ -175,206 +185,118 @@ def fetch_terabox_links(input_url: str):
     url_for_tellycloud_like_apis = input_url.replace(netloc, "1024tera.com") if "terabox.com" in netloc or "teraboxapp.com" in netloc or "freeterabox.com" in netloc else input_url
     quoted_input_url = quote(input_url)
 
-    api_endpoints = [
-        {
-            "name": "tellycloud",
-            "api_call_url": f"https://teraboxdl.tellycloudapi.workers.dev/?url={url_for_tellycloud_like_apis}",
-            "method": "GET"
-        },
-        {
-            "name": "cheems_robot_dl",
-            "api_call_url": f"https://teradlrobot.cheemsbackup.workers.dev/?url={quoted_input_url}",
-            "method": "GET"
-        },
-        {
-            "name": "teraboxdownloader_in",
-            "api_call_url": f"https://teraboxdownloader.in/api/?url={quoted_input_url}",
-            "method": "GET"
-        },
-        {
-            "name": "terabox_app_s_workers",
-            "api_call_url": f"https://terabox.app-s.workers.dev/?url={quoted_input_url}",
-            "method": "GET"
-        },
-        {
-            "name": "terabox_dl_onrender",
-            "api_call_url": f"https://terabox-dl.onrender.com/api/get-info?url={quoted_input_url}&pwd=",
-            "method": "GET"
-        },
-    ]
-
+    # Using the specific API from the user's example for direct link fetching
+    # This simplifies the link fetching part significantly if this one API is reliable
+    api_to_use = {
+        "name": "cheems_robot_dl_direct", # Name it for clarity
+        "api_call_url": f"https://teradlrobot.cheemsbackup.workers.dev/?url={quoted_input_url}",
+        "method": "GET"
+    }
+    
     common_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
-        "Accept": "application/json, text/plain, */*",
+        "Accept": "application/json, text/plain, */*", # Expecting JSON
         "Accept-Language": "en-US,en;q=0.5",
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "cross-site" # Often needed for worker APIs
     }
 
     response_json = None
-    successful_api_name = None
+    logger.info(f"Trying API: {api_to_use['name']} ({api_to_use['api_call_url']})")
 
-    for api_config in api_endpoints:
-        api_url_to_call = api_config["api_call_url"]
-        current_headers = common_headers.copy()
-        logger.info(f"Trying API: {api_config['name']} ({api_url_to_call})")
+    try:
+        api_response = get(api_to_use["api_call_url"], headers=common_headers, timeout=30, allow_redirects=True)
+        api_response.raise_for_status()
+        
+        # The example implies this API directly returns the JSON structure we need
+        current_response_json = api_response.json()
 
-        try:
-            api_response = None
-            if api_config["method"] == "GET":
-                current_headers["Sec-Fetch-Site"] = "cross-site" 
-                api_response = get(api_url_to_call, headers=current_headers, timeout=30, allow_redirects=True)
-            else: # POST
-                payload_dict = {"url": api_config.get("payload_url", input_url)}
-                if api_config.get("needs_json_payload"):
-                    current_headers["Content-Type"] = "application/json"
-                    api_response = post(api_url_to_call, headers=current_headers, json=payload_dict, timeout=30)
-                else:
-                    api_response = post(api_url_to_call, headers=current_headers, data=payload_dict, timeout=30)
-
-            api_response.raise_for_status() 
-            
-            if api_response.url != api_url_to_call and "application/json" not in api_response.headers.get("content-type", "").lower():
-                logger.info(f"API {api_config['name']} seems to have redirected to a non-JSON URL: {api_response.url}. Assuming direct link.")
-                parsed_final_url = urlparse(api_response.url)
-                filename_from_path = os.path.basename(parsed_final_url.path) or f"File_from_{api_config['name']}"
-                response_json = { 
-                    "direct_link": api_response.url, 
-                    "file_name": filename_from_path,
-                    "size": api_response.headers.get('content-length', 0)
-                }
-                successful_api_name = api_config['name'] + " (via redirect)"
-                logger.info(f"Successfully processed redirect as direct link from API: {successful_api_name}")
-                break
-
-            current_response_json = api_response.json() 
-
-            if (current_response_json.get("Success") and "Data" in current_response_json) or \
-               ("response" in current_response_json and isinstance(current_response_json["response"], list) and current_response_json["response"]) or \
-               (isinstance(current_response_json, list) and current_response_json and ("downloadLink" in current_response_json[0] or "link" in current_response_json[0])) or \
-               (current_response_json.get("list") and isinstance(current_response_json.get("list"), list)) or \
-               (current_response_json.get("direct_link")) or \
-               (current_response_json.get("url")): 
-                response_json = current_response_json
-                successful_api_name = api_config['name']
-                logger.info(f"Successfully fetched and parsed JSON from API: {successful_api_name}")
-                break
-            else:
-                logger.warning(f"API {api_config['name']} gave OK status but unexpected JSON structure: {str(current_response_json)[:200]}")
-                response_json = None
-
-        except RequestException as e:
-            logger.error(f"RequestException with API {api_config['name']} ({api_url_to_call}): {e}")
-        except ValueError as e: 
-            logger.error(f"JSONDecodeError with API {api_config['name']} ({api_url_to_call}): {e}. Response: {api_response.text[:200] if 'api_response' in locals() and api_response else 'N/A'}")
-        except Exception as e:
-            logger.error(f"Generic error with API {api_config['name']} ({api_url_to_call}): {e}", exc_info=True)
-
-    if not response_json:
-        raise DirectDownloadLinkException("ERROR: Unable to fetch valid JSON data or direct link from any API endpoint.")
-
-    logger.info(f"Processing data from successful API: {successful_api_name}")
-    details = {"contents": [], "title": "Untitled Terabox Content", "total_size": 0, "is_folder": False}
-
-    if response_json.get("Success") and "Data" in response_json: 
-        logger.info(f"Parsing as Structure 1 (Success:True, Data:{{...}}) from API: {successful_api_name}")
-        item_data = response_json["Data"]
-        title = item_data.get("FileName", item_data.get("title", "Untitled_File"))
-        details["title"] = title
-        details["total_size"] = item_data.get("FileSizebytes", 0) 
-        if isinstance(details["total_size"], str) and details["total_size"].isdigit(): details["total_size"] = int(details["total_size"])
-        elif not isinstance(details["total_size"], int):
-            file_size_str = item_data.get("FileSize", item_data.get("size"))
-            if file_size_str:
-                match_mb = re.match(r"([\d.]+)\s*MB", str(file_size_str), re.IGNORECASE)
-                match_gb = re.match(r"([\d.]+)\s*GB", str(file_size_str), re.IGNORECASE)
-                if match_mb: details["total_size"] = int(float(match_mb.group(1)) * 1024 * 1024)
-                elif match_gb: details["total_size"] = int(float(match_gb.group(1)) * 1024 * 1024 * 1024)
-                else: details["total_size"] = 0
-            else: details["total_size"] = 0
-        direct_link = item_data.get("DirectLink") or item_data.get("DirectLink2") or item_data.get("url") or item_data.get("link")
-        if direct_link: details["contents"].append({"url": direct_link, "filename": title})
-        else: 
-            resolutions = item_data.get("resolutions", {})
-            if resolutions:
-                chosen_link = resolutions.get("HD Video") or resolutions.get("SD Video") or next(iter(resolutions.values()), None)
-                if chosen_link: details["contents"].append({"url": chosen_link, "filename": title})
-        if not details["contents"]: logger.warning(f"API {successful_api_name} (Struct 1): No direct link or resolution found in Data.")
-
-    elif "response" in response_json and isinstance(response_json["response"], list): 
-        logger.info(f"Parsing as Structure 2 (response:[...]) from API: {successful_api_name}")
-        response_list = response_json["response"]
-        if not response_list: logger.warning(f"API {successful_api_name} (Struct 2): 'response' list is empty.")
+        # Check for a structure similar to what the example's aria2.add_uris would receive
+        # Example structure: {"response": [{"url": "...", "title": "...", "size": "..."}]}
+        # Or a simpler direct link structure if the API provides it directly.
+        if ("response" in current_response_json and isinstance(current_response_json["response"], list) and current_response_json["response"] and "url" in current_response_json["response"][0]) or \
+           ("direct_link" in current_response_json and "file_name" in current_response_json): # For other common direct link APIs
+            response_json = current_response_json
+            logger.info(f"Successfully fetched and parsed JSON from API: {api_to_use['name']}")
         else:
-            details["is_folder"] = len(response_list) > 1
-            if details["is_folder"]: details["title"] = response_list[0].get("title", "Terabox_Folder") 
-            for i_idx, item in enumerate(response_list): # Renamed i to i_idx to avoid conflict
-                file_title = item.get("title", f"file_{i_idx+1}")
-                if not details["is_folder"] and i_idx==0 : details["title"] = file_title
-                direct_link = None
-                resolutions = item.get("resolutions", {})
-                if resolutions: direct_link = resolutions.get("HD Video") or resolutions.get("Fast Download") or resolutions.get("SD Video") or next(iter(resolutions.values()), None)
-                else: direct_link = item.get("url") or item.get("downloadLink") or item.get("link")
-                if direct_link:
-                    file_size_str = item.get("size", "0") 
-                    try:
-                        if isinstance(file_size_str, (int,float)): details["total_size"] += int(file_size_str)
-                    except ValueError: pass
-                    details["contents"].append({"url": direct_link, "filename": file_title})
-            if not details["contents"]: logger.warning(f"API {successful_api_name} (Struct 2): No usable links found in 'response' list.")
-    
+            logger.warning(f"API {api_to_use['name']} gave OK status but unexpected JSON structure: {str(current_response_json)[:300]}")
+            raise DirectDownloadLinkException("ERROR: API response JSON structure not recognized.")
+
+    except RequestException as e:
+        logger.error(f"RequestException with API {api_to_use['name']}: {e}")
+        raise DirectDownloadLinkException(f"ERROR: Network error with API: {e}")
+    except ValueError as e: 
+        logger.error(f"JSONDecodeError with API {api_to_use['name']}: {e}. Response: {api_response.text[:200] if 'api_response' in locals() and api_response else 'N/A'}")
+        raise DirectDownloadLinkException(f"ERROR: Could not decode API JSON response: {e}")
+    except Exception as e:
+        logger.error(f"Generic error with API {api_to_use['name']}: {e}", exc_info=True)
+        raise DirectDownloadLinkException(f"ERROR: Generic error with API: {e}")
+
+    if not response_json: # Should be caught by exceptions above, but as a safeguard
+        raise DirectDownloadLinkException("ERROR: Unable to fetch valid JSON data from the API endpoint.")
+
+    details = {"contents": [], "title": "Terabox Content", "total_size": 0, "is_folder": False}
+
+    # Adapting parser for the structure implied by the example:
+    # {"response": [{"url": "...", "title": "...", "size": "..."}]}
+    if "response" in response_json and isinstance(response_json["response"], list):
+        logger.info(f"Parsing as 'response list' structure from API: {api_to_use['name']}")
+        response_list = response_json["response"]
+        if not response_list:
+            logger.warning(f"API {api_to_use['name']}: 'response' list is empty.")
+            raise DirectDownloadLinkException("ERROR: API 'response' list is empty.")
+        
+        details["is_folder"] = len(response_list) > 1
+        # If it's a folder, the title might be from the first item or a general one.
+        # If single file, use its title.
+        details["title"] = response_list[0].get("title", "Terabox Folder" if details["is_folder"] else "Terabox File")
+
+        for i_idx, item in enumerate(response_list):
+            file_url = item.get("url")
+            file_title = item.get("title", f"file_{i_idx+1}")
+            
+            if file_url:
+                details["contents"].append({"url": file_url, "filename": file_title})
+                # Size parsing can be added here if the API provides it reliably per item
+                # file_size_str = item.get("size", "0")
+                # try:
+                #     if isinstance(file_size_str, (int,float)): details["total_size"] += int(file_size_str)
+                # except ValueError: pass
+            else:
+                logger.warning(f"Item {i_idx} in response list from {api_to_use['name']} missing 'url'. Item: {item}")
+        
+        if not details["contents"]:
+            logger.warning(f"API {api_to_use['name']}: No usable URLs found in 'response' list.")
+            raise DirectDownloadLinkException("ERROR: No usable download URLs extracted from API response.")
+
+    # Fallback for other direct link structures (like the ones previously handled)
     elif response_json.get("direct_link") and response_json.get("file_name"): 
-        logger.info(f"Parsing as Structure 3 (direct_link, file_name) from API: {successful_api_name}")
+        logger.info(f"Parsing as 'direct_link, file_name' structure from API: {api_to_use['name']}")
         details["title"] = response_json.get("file_name")
         details["contents"].append({"url": response_json["direct_link"], "filename": response_json.get("file_name")})
-        try: details["total_size"] = int(response_json.get("file_size_bytes", response_json.get("size", 0)))
-        except (ValueError, TypeError): logger.warning(f"Could not parse file_size_bytes for API {successful_api_name} (Struct 3)")
+        try: 
+            size_val = response_json.get("file_size_bytes", response_json.get("size", 0))
+            if isinstance(size_val, str) and size_val.isdigit():
+                details["total_size"] = int(size_val)
+            elif isinstance(size_val, (int, float)):
+                 details["total_size"] = int(size_val)
+        except (ValueError, TypeError): 
+            logger.warning(f"Could not parse file_size for API {api_to_use['name']}")
+    else:
+        logger.error(f"Unhandled JSON structure from API {api_to_use['name']}. JSON: {str(response_json)[:300]}")
+        raise DirectDownloadLinkException("ERROR: Unhandled or invalid API response structure after all fallbacks.")
 
-    elif isinstance(response_json, list) and response_json: 
-        logger.info(f"Parsing as Structure 4 (list of objects) from API: {successful_api_name}")
-        details["is_folder"] = len(response_json) > 1
-        details["title"] = "Terabox_Folder" if details["is_folder"] else response_json[0].get("name", "Terabox_File")
-        for i_idx, item in enumerate(response_json): # Renamed i to i_idx
-            direct_link = item.get("downloadLink") or item.get("url") or item.get("link")
-            filename_val = item.get("name") or item.get("filename", f"file_{i_idx+1}") # Renamed filename to filename_val
-            if direct_link:
-                details["contents"].append({"url": direct_link, "filename": filename_val})
-                try: details["total_size"] += int(item.get("size", 0))
-                except (ValueError, TypeError): pass 
-        if not details["contents"]: logger.warning(f"API {successful_api_name} (Struct 4): No usable links found in list.")
-    
-    elif response_json.get("url") and response_json.get("filename"):
-        logger.info(f"Parsing as simple {{'url': ..., 'filename': ...}} from API: {successful_api_name}")
-        details["title"] = response_json.get("filename")
-        details["contents"].append({"url": response_json["url"], "filename": response_json.get("filename")})
-        try: details["total_size"] = int(response_json.get("size", 0))
-        except (ValueError, TypeError): logger.warning(f"Could not parse size for simple API {successful_api_name}")
-
-    else: 
-        logger.warning(f"Unhandled JSON structure from API {successful_api_name}. Attempting most generic parse: {str(response_json)[:300]}")
-        if isinstance(response_json, dict):
-            dl_url = response_json.get("url") or response_json.get("direct_link") or response_json.get("downloadLink")
-            dl_name = response_json.get("filename") or response_json.get("name") or response_json.get("title", "Untitled_File_Generic")
-            if dl_url:
-                details["title"] = dl_name
-                details["contents"].append({"url": dl_url, "filename": dl_name})
-                logger.info("Most generic fallback parse: Found a potential link.")
-            else:
-                 logger.error(f"Most generic fallback parse failed for API {successful_api_name}. No common link keys found.")
-                 raise DirectDownloadLinkException("ERROR: Unhandled or invalid API response structure after all fallbacks.")
-        else:
-            logger.error(f"Most generic fallback parse failed for API {successful_api_name}. Response is not a dictionary.")
-            raise DirectDownloadLinkException("ERROR: Unhandled API response type (not a dict) after all fallbacks.")
-
-    if not details["contents"]:
-        logger.error(f"No valid download links found after processing JSON from {successful_api_name}. JSON: {str(response_json)[:300]}")
+    if not details["contents"]: # Should be caught by earlier checks
+        logger.error(f"No valid download links found after processing JSON from {api_to_use['name']}.")
         raise DirectDownloadLinkException("ERROR: No valid download links extracted.")
 
     logger.info(f"Successfully processed. Found {len(details['contents'])} items. Title: {details['title']}")
     return details
 
+
 # === Helper Functions ===
-def format_size(size_in_bytes: int) -> str: # Replaced get_readable_file_size
+def format_size(size_in_bytes: int) -> str: 
     if not isinstance(size_in_bytes, (int, float)) or size_in_bytes < 0: return "N/A"
     if size_in_bytes == 0: return "0 B"
     
@@ -418,7 +340,7 @@ async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("Could not verify channel subscription at the moment. Please try again later.")
         return False
 
-# === Admin Commands (Mostly unchanged, view_config updated for Aria2 version) ===
+# === Admin Commands ===
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update.effective_user.id):
         await update.message.reply_text("You are not authorized to use this command.")
@@ -559,7 +481,7 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
             logger.warning(f"Failed to delete settings message: {e}")
             await query.edit_message_text("Settings panel closed.", reply_markup=None) 
 
-# === User Command Handlers (Unchanged) ===
+# === User Command Handlers ===
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_subscription(update, context): return
     user_name = update.effective_user.first_name
@@ -587,43 +509,61 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === Robust Status Message Updater ===
 async def update_tg_status_message(status_msg_obj, text_to_send, parse_mode_val=ParseMode.MARKDOWN):
-    """Safely updates a Telegram message, handling FloodControl."""
-    if status_msg_obj.text == text_to_send: # Avoid editing if text is the same
+    if status_msg_obj is None: # Safety check
+        logger.warning("Attempted to update a None status message.")
         return
+    if status_msg_obj.text == text_to_send: 
+        return
+    
+    # Limit update frequency to avoid hitting rate limits too aggressively
+    # This is a simple way; a more sophisticated approach might use a per-chat lock or queue
+    context = ContextTypes.DEFAULT_TYPE(application=status_msg_obj.get_bot().application) # Get context
+    now = time.time()
+    last_edit_time = context.chat_data.get(f"last_edit_time_{status_msg_obj.message_id}", 0)
+    
+    if now - last_edit_time < 1.5: # Edit at most every 1.5 seconds
+        await asyncio.sleep(1.5 - (now - last_edit_time)) # Wait for the remainder of the interval
+
     while True:
         try:
             await status_msg_obj.edit_text(text_to_send, parse_mode=parse_mode_val)
+            context.chat_data[f"last_edit_time_{status_msg_obj.message_id}"] = time.time()
             break 
-        except RetryAfter as e: # Catching RetryAfter
-            logger.warning(f"Flood control: waiting for {e.retry_after} seconds before retrying status update.")
+        except RetryAfter as e: 
+            logger.warning(f"RetryAfter: waiting for {e.retry_after} seconds before retrying status update for message {status_msg_obj.message_id}.")
             await asyncio.sleep(e.retry_after)
         except Exception as e:
-            logger.error(f"Failed to update status message: {e}", exc_info=True)
-            break # Break on other errors
+            logger.error(f"Failed to update status message {status_msg_obj.message_id}: {e}", exc_info=True)
+            break 
 
-# === Message Handler for Terabox Links (Updated for Aria2 Status) ===
+# === Message Handler for Terabox Links ===
 async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global DUMP_CHANNEL_ID, aria2_client, ARIA2_VERSION_STR
     if not update.message or not update.message.text: return
     if not await check_subscription(update, context): return
 
     message_text = update.message.text
-    terabox_link_pattern = r"https?://(?:www\.)?(?:terabox|freeterabox|teraboxapp|1024tera|nephobox|mirrobox|4funbox|momerybox|terabox\.app|gibibox|goaibox|terasharelink|1024terabox|teraboxshare)\.(?:com|app|link|me|xyz|cloud|fun|online|store|shop|top|pw|org|net|info|mobi|asia|vip|pro|life|live|world|space|tech|site|icu|cyou|buzz|gallery|website|press|services|show|run|gold|plus|guru|center|group|company|directory|today|digital|network|solutions|systems|technology|software|click|store|shop|ninja|money|pics|lol|tube|pictures|cam|vin|art|blog|best|fans|media|game|video|stream|movie|film|music|audio|cloud|drive|share|storage|file|data|download|backup|upload|box|disk)\S+"
+    # More comprehensive Terabox domain matching
+    terabox_link_pattern = r"https?://(?:www\.)?(?:[a-zA-Z0-9-]+\.)?(?:terabox|freeterabox|teraboxapp|1024tera|nephobox|mirrobox|4funbox|momerybox|terabox\.app|gibibox|goaibox|terasharelink|1024terabox|teraboxshare|terafileshare)\.(?:com|app|link|me|xyz|cloud|fun|online|store|shop|top|pw|org|net|info|mobi|asia|vip|pro|life|live|world|space|tech|site|icu|cyou|buzz|gallery|website|press|services|show|run|gold|plus|guru|center|group|company|directory|today|digital|network|solutions|systems|technology|software|click|store|shop|ninja|money|pics|lol|tube|pictures|cam|vin|art|blog|best|fans|media|game|video|stream|movie|film|music|audio|cloud|drive|share|storage|file|data|download|backup|upload|box|disk)\S+"
     match = re.search(terabox_link_pattern, message_text, re.IGNORECASE)
     
     if not match:
         if not (message_text.startswith('/') or len(message_text.split()) > 10): 
+            # Avoid replying to potential commands or very long non-link messages
             await update.message.reply_text("Please send a valid Terabox link. If you need help, type /help.")
         return
 
     url_to_process = match.group(0)
     status_msg = await update.message.reply_text(f"🔄 Processing Terabox link: {url_to_process[:50]}...")
     target_chat_id_for_files = DUMP_CHANNEL_ID if DUMP_CHANNEL_ID else update.message.chat_id
-    user_info_for_status = f"<a href='tg://user?id={update.effective_user.id}'>{update.effective_user.first_name}</a> | ID: {update.effective_user.id}"
+    user_id_for_status = update.effective_user.id
+    user_first_name_for_status = update.effective_user.first_name.replace("<","&lt;").replace(">","&gt;") # Basic HTML escape
+    user_info_for_status = f"<a href='tg://user?id={user_id_for_status}'>{user_first_name_for_status}</a> | ɪᴅ: {user_id_for_status}"
 
 
     try:
         loop = asyncio.get_event_loop()
+        # fetch_terabox_links is synchronous, run in executor
         terabox_data = await loop.run_in_executor(None, fetch_terabox_links, url_to_process)
 
         if not terabox_data or not terabox_data.get("contents"):
@@ -641,22 +581,22 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         temp_dir = "./temp_downloads" 
 
-        for i_loop, file_info in enumerate(terabox_data["contents"]): # Renamed i to i_loop
+        for i_loop, file_info in enumerate(terabox_data["contents"]): 
             direct_url = file_info["url"]
             original_filename = file_info["filename"]
-            filename = re.sub(r'[<>:"/\\|?*]', '_', original_filename)[:200]
-            if '.' not in filename and '.' in direct_url:
+            filename = re.sub(r'[<>:"/\\|?*]', '_', original_filename)[:200] # Sanitize and shorten
+            if '.' not in filename and '.' in direct_url: # Try to get extension
                 try:
                     path_part = urlparse(direct_url).path
                     potential_ext = os.path.splitext(path_part)[1]
                     if potential_ext and 1 < len(potential_ext) < 7: filename += potential_ext
                 except Exception: pass
-            if not filename: filename = f"file_{i_loop+1}"
+            if not filename: filename = f"file_{i_loop+1}" # Fallback filename
 
             temp_file_path = None 
-            downloaded_size = 0
+            downloaded_size_bytes = 0
             download_method_used = ""
-            download_start_time = datetime.now() # For elapsed time calculation
+            download_start_time = datetime.now() 
 
             try:
                 if ARIA2_ENABLED and aria2_client:
@@ -665,23 +605,22 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await update_tg_status_message(status_msg, initial_aria_status_text)
                     
                     logger.info(f"Adding download to aria2: {filename} from {direct_url}")
-                    # Pass sanitized filename to 'out' option for Aria2
                     aria2_download = aria2_client.add_uris([direct_url], options={'dir': temp_dir, 'out': filename})
                     
-                    last_status_update_time = time.time()
+                    last_status_update_time_loop = time.time() # Renamed
                     while not aria2_download.is_complete and not aria2_download.has_error:
                         aria2_download.update() 
-                        current_time_loop = time.time() # Renamed current_time
-                        if current_time_loop - last_status_update_time > 2.5: # Update status message every 2.5s
+                        current_time_loop_inner = time.time() # Renamed
+                        if current_time_loop_inner - last_status_update_time_loop > 2.0: # Update status message every 2s for Aria2
                             prog_percent = aria2_download.progress
                             completed_len_bytes = aria2_download.completed_length
                             total_len_bytes = aria2_download.total_length
-                            dl_speed_str = aria2_download.download_speed_string()
-                            eta_str = aria2_download.eta_string()
-                            aria2_dl_name = aria2_download.name # Use name from Aria2
+                            dl_speed_str = aria2_download.download_speed_string() # This is a method call
+                            eta_str = aria2_download.eta_string() # This is a method call
+                            aria2_dl_name = filename # Use our sanitized filename for consistency
 
                             elapsed_time_delta = datetime.now() - download_start_time
-                            elapsed_minutes, elapsed_seconds = divmod(elapsed_time_delta.seconds, 60)
+                            elapsed_minutes, elapsed_seconds = divmod(int(elapsed_time_delta.total_seconds()), 60)
                             
                             progress_bar_filled = "★" * int(prog_percent / 10)
                             progress_bar_empty = "☆" * (10 - int(prog_percent / 10))
@@ -696,15 +635,15 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                                 f"┠ ᴇᴛᴀ: {eta_str} | ᴇʟᴀᴘsᴇᴅ: {elapsed_minutes}m {elapsed_seconds}s\n"
                                 f"┖ ᴜsᴇʀ: {user_info_for_status}\n"
                             )
-                            await update_tg_status_message(status_msg, status_text_aria, parse_mode_val=ParseMode.HTML) # Use HTML for user link
-                            last_status_update_time = current_time_loop
-                        await asyncio.sleep(1) # Check every second
+                            await update_tg_status_message(status_msg, status_text_aria, parse_mode_val=ParseMode.HTML)
+                            last_status_update_time_loop = current_time_loop_inner
+                        await asyncio.sleep(0.5) # Check more frequently for faster updates if needed
 
                     aria2_download.update() 
                     if aria2_download.is_complete:
                         if aria2_download.files:
                             temp_file_path = aria2_download.files[0].path
-                            downloaded_size = aria2_download.completed_length
+                            downloaded_size_bytes = aria2_download.completed_length
                             logger.info(f"Aria2 download complete for {aria2_download.name}. Path: {temp_file_path}")
                         else:
                             logger.error(f"Aria2 download for {aria2_download.name} complete but no file path found. GID: {aria2_download.gid}")
@@ -730,33 +669,45 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                     if not ARIA2_ENABLED: logger.info(f"Aria2 disabled, using HTTPX for {filename}")
                     elif aria2_client is None: logger.info(f"Aria2 client not connected or aria2p missing, using HTTPX for {filename}")
                     
-                    current_file_progress_text = f"Downloading **{filename}** ({i_loop+1}/{num_files}) via HTTPX..."
-                    await update_tg_status_message(status_msg, current_file_progress_text)
+                    initial_httpx_status_text = f"Downloading **{filename}** ({i_loop+1}/{num_files}) via HTTPX..."
+                    await update_tg_status_message(status_msg, initial_httpx_status_text)
                     
                     temp_file_path = os.path.join(temp_dir, filename) 
-                    last_status_update_time = time.time() # Renamed last_update_time
+                    last_status_update_time_loop = time.time()
                     
                     async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client: 
                         async with client.stream("GET", direct_url, timeout=httpx.Timeout(60.0, connect=30.0)) as response: 
                             response.raise_for_status()
                             total_size_bytes = int(response.headers.get('content-length', 0))
-                            with open(temp_file_path, "wb") as f:
+                            with open(temp_file_path, "wb") as f_httpx: # Renamed f to f_httpx
                                 async for chunk in response.aiter_bytes(chunk_size=131072): 
                                     if not chunk: continue
-                                    f.write(chunk)
-                                    downloaded_size += len(chunk)
-                                    current_time_loop = time.time() # Renamed current_time
-                                    if current_time_loop - last_status_update_time > 2.5: 
-                                        percentage = (downloaded_size / total_size_bytes * 100) if total_size_bytes > 0 else 0
-                                        progress_bar_str = "█" * int(percentage / 5) + "░" * (20 - int(percentage / 5))
+                                    f_httpx.write(chunk)
+                                    downloaded_size_bytes += len(chunk)
+                                    current_time_loop_inner = time.time()
+                                    if current_time_loop_inner - last_status_update_time_loop > 2.0: # Update status message every 2s for HTTPX
+                                        percentage = (downloaded_size_bytes / total_size_bytes * 100) if total_size_bytes > 0 else 0
+                                        
+                                        elapsed_time_delta = datetime.now() - download_start_time
+                                        elapsed_minutes, elapsed_seconds = divmod(int(elapsed_time_delta.total_seconds()), 60)
+                                        
+                                        # Simplified progress bar for HTTPX as it doesn't have rich ETA/speed like Aria2
+                                        progress_bar_filled = "★" * int(percentage / 10)
+                                        progress_bar_empty = "☆" * (10 - int(percentage / 10))
+
                                         status_text_httpx = (
-                                            f"{current_file_progress_text}\n"
-                                            f"`{progress_bar_str}`\n"
-                                            f"{format_size(downloaded_size)} / {format_size(total_size_bytes)} ({percentage:.1f}%)"
+                                            f"┏ ғɪʟᴇɴᴀᴍᴇ: {filename}\n"
+                                            f"┠ [{progress_bar_filled}{progress_bar_empty}] {percentage:.2f}%\n"
+                                            f"┠ ᴘʀᴏᴄᴇssᴇᴅ: {format_size(downloaded_size_bytes)} ᴏғ {format_size(total_size_bytes)}\n"
+                                            f"┠ sᴛᴀᴛᴜs: 📥 Downloading\n"
+                                            f"┠ ᴇɴɢɪɴᴇ: <b><u>HTTPX Fallback</u></b>\n"
+                                            # Speed and ETA are harder to calculate accurately here without more complex logic
+                                            f"┠ ᴇʟᴀᴘsᴇᴅ: {elapsed_minutes}m {elapsed_seconds}s\n"
+                                            f"┖ ᴜsᴇʀ: {user_info_for_status}\n"
                                         )
-                                        await update_tg_status_message(status_msg, status_text_httpx)
-                                        last_status_update_time = current_time_loop
-                    logger.info(f"HTTPX download complete for {filename}. Size: {downloaded_size}")
+                                        await update_tg_status_message(status_msg, status_text_httpx, parse_mode_val=ParseMode.HTML)
+                                        last_status_update_time_loop = current_time_loop_inner
+                    logger.info(f"HTTPX download complete for {filename}. Size: {downloaded_size_bytes}")
 
                 if not temp_file_path or not os.path.exists(temp_file_path):
                     logger.error(f"File {filename} was not found at expected path after download ({download_method_used}). Path: {temp_file_path}")
@@ -764,14 +715,14 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                     continue
 
                 final_file_size_on_disk = os.path.getsize(temp_file_path)
-                final_progress_text = f"✅ Downloaded **{filename}** ({format_size(final_file_size_on_disk)} via {download_method_used}).\nNow uploading..."
-                await update_tg_status_message(status_msg, final_progress_text)
+                upload_prep_text = f"✅ Downloaded **{filename}** ({format_size(final_file_size_on_disk)} via {download_method_used}).\nNow preparing to upload..."
+                await update_tg_status_message(status_msg, upload_prep_text)
 
                 if final_file_size_on_disk > 2 * 1024 * 1024 * 1024: 
-                    error_large_file = f"❌ File **{filename}** is too large ({format_size(final_file_size_on_disk)}) to upload. Max is 2GB."
+                    error_large_file = f"❌ File **{filename}** is too large ({format_size(final_file_size_on_disk)}) to upload. Max is 2GB for bot uploads."
                     await update_tg_status_message(status_msg, error_large_file)
                     if DUMP_CHANNEL_ID:
-                         await context.bot.send_message(DUMP_CHANNEL_ID, f"Failed to upload: {filename} (too large: {format_size(final_file_size_on_disk)}) from user {update.effective_user.id} ({update.effective_user.username or 'no_username'}). Link: {url_to_process}")
+                         await context.bot.send_message(DUMP_CHANNEL_ID, f"Failed to upload: {filename} (too large: {format_size(final_file_size_on_disk)}) from user {user_id_for_status}. Link: {url_to_process}")
                     continue
 
                 caption_text = f"**{filename}**\n\n**Size:** {format_size(final_file_size_on_disk)}\n\n"
@@ -779,7 +730,17 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                 caption_text += f"Processed by @{context.bot.username}"
                 file_ext = os.path.splitext(filename)[1].lower()
                 sent_message = None
-                upload_timeout_seconds = max(120, min(3000, int(final_file_size_on_disk / (25 * 1024 * 1024 / 60) ) )) 
+                upload_timeout_seconds = max(120, min(3600, int(final_file_size_on_disk / (10 * 1024 * 1024 / 60) ) )) # Adjusted for potentially slower uploads, max 1hr
+
+                # Upload status (simplified, as PTB doesn't have a direct progress callback for sending like Pyrogram)
+                upload_status_text = (
+                    f"┏ ғɪʟᴇɴᴀᴍᴇ: {filename}\n"
+                    f"┠ sᴛᴀᴛᴜs: 📤 Uploading to Telegram...\n"
+                    f"┠ sɪᴢᴇ: {format_size(final_file_size_on_disk)}\n"
+                    f"┖ ᴜsᴇʀ: {user_info_for_status}\n"
+                )
+                await update_tg_status_message(status_msg, upload_status_text, parse_mode_val=ParseMode.HTML)
+
 
                 with open(temp_file_path, "rb") as doc_to_send:
                     send_kwargs = {
@@ -796,14 +757,15 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                 
                 if sent_message:
                     success_msg_text = f"✅ Successfully uploaded **{filename}**!"
-                    if target_chat_id_for_files == update.message.chat_id:
+                    if target_chat_id_for_files == update.message.chat_id: # If sending to user directly
                         await update_tg_status_message(status_msg, success_msg_text)
-                    else: 
+                    else: # If sending to dump channel
                         await update.message.reply_text(success_msg_text, parse_mode=ParseMode.MARKDOWN) 
+                        # Optionally update status_msg in user chat if it's different
                         if status_msg.chat_id == update.message.chat_id : 
                            await update_tg_status_message(status_msg, success_msg_text) 
                 else:
-                    await update_tg_status_message(status_msg, f"⚠️ Could not upload **{filename}**. The bot might lack permissions or an unknown error occurred.")
+                    await update_tg_status_message(status_msg, f"⚠️ Could not upload **{filename}**. The bot might lack permissions or an unknown error occurred during upload.")
 
             except httpx.HTTPStatusError as e: 
                 logger.error(f"HTTP error downloading {filename} from {direct_url} (HTTPX): {e.response.status_code} - {e.response.text[:100]}", exc_info=True)
@@ -829,6 +791,7 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                         logger.error(f"Failed to remove temp file {temp_file_path}: {e_rm}")
                 if download_method_used == "Aria2" and 'aria2_download' in locals() and aria2_download:
                     try:
+                        # Attempt to remove the download from Aria2, especially if it failed or wasn't completed.
                         if not aria2_download.is_complete or aria2_download.has_error or not temp_file_path: 
                             logger.info(f"Attempting to remove GID {aria2_download.gid} from Aria2 due to error or incompletion.")
                             aria2_download.remove(force=True, files=True) 
@@ -836,16 +799,22 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                         logger.warning(f"Could not clean up GID {aria2_download.gid if 'aria2_download' in locals() and aria2_download else 'N/A'} from Aria2: {e_aria_clean}")
 
         final_completion_message = f"🏁 All {num_files} file(s) from '{folder_title}' processed."
-        if status_msg.chat_id == update.message.chat_id:
+        if status_msg and status_msg.chat_id == update.message.chat_id: # Check if status_msg is valid
             await update_tg_status_message(status_msg, final_completion_message)
-        else: await update.message.reply_text(final_completion_message)
+        else: # If status_msg was deleted or is not in user chat, send a new reply
+            await update.message.reply_text(final_completion_message)
 
     except DirectDownloadLinkException as e:
         logger.warning(f"DirectDownloadLinkException for {url_to_process}: {e}")
-        await update_tg_status_message(status_msg, f"❌ Error processing link: {e}")
+        if status_msg: await update_tg_status_message(status_msg, f"❌ Error processing link: {e}")
     except Exception as e: 
         logger.error(f"Unhandled error processing link {url_to_process}: {e}", exc_info=True)
-        await update_tg_status_message(status_msg, f"❌ An unexpected error occurred. Please try again later or check the link.\nError: {str(e)[:100]}")
+        if status_msg: await update_tg_status_message(status_msg, f"❌ An unexpected error occurred. Please try again later or check the link.\nError: {str(e)[:100]}")
+    finally:
+        # Clean up last edit time from chat_data if status_msg exists
+        if status_msg and context:
+            context.chat_data.pop(f"last_edit_time_{status_msg.message_id}", None)
+
 
 # === Main Application Setup ===
 def run_bot():
@@ -856,7 +825,18 @@ def run_bot():
         logger.critical("BOT_TOKEN is not set. Exiting.")
         return
 
-    application = Application.builder().token(BOT_TOKEN).build()
+    # Consider increasing default pool size for httpx if it's used extensively for link fetching
+    # and if fetch_terabox_links becomes async.
+    # For now, PTB's concurrency is the main focus.
+    application_builder = Application.builder().token(BOT_TOKEN)
+    
+    # Configure concurrent_updates and connection_pool_size for better handling of multiple users
+    # These values can be tuned based on server resources and expected load.
+    application_builder.concurrent_updates(10) # Handle up to 10 updates concurrently
+    application_builder.connection_pool_size(512) # Default is 512, usually fine.
+
+    application = application_builder.build()
+
 
     application.add_handler(CommandHandler("logs", logs_command))
     application.add_handler(CommandHandler("setdump", set_dump_command))
@@ -869,7 +849,8 @@ def run_bot():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_terabox_link))
 
     logger.info("Bot started and polling...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Removed concurrent_updates from run_polling as it's set in builder now
+    application.run_polling(allowed_updates=Update.ALL_TYPES) 
 
 if __name__ == "__main__":
     temp_dir = "./temp_downloads"
