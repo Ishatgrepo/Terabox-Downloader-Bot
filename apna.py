@@ -6,11 +6,11 @@ import os
 import re
 import logging
 import time
-import html # For escaping HTML special characters
+import html  # For escaping HTML special characters
 from urllib.parse import urlparse, quote
-from requests import post, get, RequestException # For the synchronous terabox link fetching part
+from requests import post, get, RequestException  # For the synchronous terabox link fetching part
 from collections import deque
-from datetime import datetime # Added for elapsed time calculation
+from datetime import datetime  # Added for elapsed time calculation
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -18,9 +18,9 @@ from telegram.constants import ParseMode
 from telegram.error import RetryAfter 
 
 try:
-    import aria2p # For aria2c RPC
+    import aria2p  # For aria2c RPC
 except ImportError:
-    aria2p = None # Handle missing library gracefully
+    aria2p = None  # Handle missing library gracefully
 
 # === Configuration ===
 BOT_TOKEN = os.getenv("BOT_TOKEN", "7893919705:AAE9b6jpHFdxzQQIucrNMEvje2u7N8uL15o")
@@ -28,7 +28,6 @@ DUMP_CHANNEL_ID_STR = os.getenv("DUMP_CHANNEL_ID", "-1002281669966")
 FORCE_SUB_CHANNEL_ID_STR = os.getenv("FORCE_SUB_CHANNEL_ID", None)
 ADMIN_USER_IDS_STR = os.getenv("ADMIN_USER_IDS", "6469067345")
 ADMIN_USER_IDS = [int(admin_id.strip()) for admin_id in ADMIN_USER_IDS_STR.split(',') if admin_id.strip()]
-
 
 # === Aria2c Configuration ===
 ARIA2_RPC_HOST = os.getenv("ARIA2_RPC_HOST", "http://localhost")
@@ -46,7 +45,6 @@ ARIA2_GLOBAL_OPTIONS = {
     "max-concurrent-downloads": "10",  
     "optimize-concurrent-downloads": "true",
 }
-
 
 # Runtime configuration variables
 DUMP_CHANNEL_ID = None
@@ -131,7 +129,6 @@ def initialize_aria2():
                      f"Ensure aria2c is running in daemon mode with RPC enabled. Error: {e}", exc_info=True)
         aria2_client = None
         ARIA2_VERSION_STR = "Error (Conn/Other)"
-
 
 # === Logging Setup ===
 logging.basicConfig(
@@ -234,7 +231,7 @@ def fetch_terabox_links(input_url: str):
             api_response = None
             if api_config["method"] == "GET":
                 api_response = get(api_url_to_call, headers=current_headers, timeout=30, allow_redirects=True)
-            else: # POST (though current list is all GET)
+            else:  # POST (though current list is all GET)
                 payload_dict = {"url": api_config.get("payload_url", input_url)}
                 if api_config.get("needs_json_payload"):
                     current_headers["Content-Type"] = "application/json"
@@ -252,11 +249,11 @@ def fetch_terabox_links(input_url: str):
                 response_json = { 
                     "direct_link": api_response.url, 
                     "file_name": filename_from_path,
-                    "size": api_response.headers.get('content-length', 0) # Attempt to get size
+                    "size": api_response.headers.get('content-length', 0)  # Attempt to get size
                 }
                 successful_api_name = api_config['name'] + " (via redirect)"
                 logger.info(f"Successfully processed redirect as direct link from API: {successful_api_name}")
-                break # Found a link
+                break  # Found a link
 
             current_response_json = api_response.json()
 
@@ -270,19 +267,19 @@ def fetch_terabox_links(input_url: str):
                 response_json = current_response_json
                 successful_api_name = api_config['name']
                 logger.info(f"Successfully fetched and parsed JSON from API: {successful_api_name}")
-                break # Found valid JSON
+                break  # Found valid JSON
             else:
                 logger.warning(f"API {api_config['name']} gave OK status but unexpected JSON structure: {str(current_response_json)[:300]}")
-                response_json = None # Reset for next try
+                response_json = None  # Reset for next try
 
         except RequestException as e:
             logger.error(f"RequestException with API {api_config['name']} ({api_url_to_call}): {e}")
-        except ValueError as e: # JSONDecodeError
+        except ValueError as e:  # JSONDecodeError
             logger.error(f"JSONDecodeError with API {api_config['name']} ({api_url_to_call}): {e}. Response: {api_response.text[:200] if 'api_response' in locals() and api_response else 'N/A'}")
-        except Exception as e: # Other errors
+        except Exception as e:  # Other errors
             logger.error(f"Generic error with API {api_config['name']} ({api_url_to_call}): {e}", exc_info=True)
         
-        if response_json: # If we got a valid response from this API, no need to try others
+        if response_json:  # If we got a valid response from this API, no need to try others
             break
 
     if not response_json:
@@ -319,7 +316,7 @@ def fetch_terabox_links(input_url: str):
 
     elif "response" in response_json and isinstance(response_json["response"], list): 
         logger.info(f"Parsing as Structure 2 ('response' list) from API: {successful_api_name}")
-        response_list_data = response_json["response"] # Renamed
+        response_list_data = response_json["response"]  # Renamed
         if not response_list_data: logger.warning(f"API {successful_api_name} (Struct 2): 'response' list is empty.")
         else:
             details["is_folder"] = len(response_list_data) > 1
@@ -349,8 +346,7 @@ def fetch_terabox_links(input_url: str):
         except (ValueError, TypeError): 
             logger.warning(f"Could not parse file_size for API {successful_api_name} (Struct 3)")
 
-
-    elif isinstance(response_json, list) and response_json: # Generic list of objects
+    elif isinstance(response_json, list) and response_json:  # Generic list of objects
         logger.info(f"Parsing as Structure 4 (list of objects) from API: {successful_api_name}")
         details["is_folder"] = len(response_json) > 1
         details["title"] = "Terabox_Folder" if details["is_folder"] else response_json[0].get("name", response_json[0].get("filename", "Terabox_File"))
@@ -361,14 +357,14 @@ def fetch_terabox_links(input_url: str):
                 details["contents"].append({"url": direct_link, "filename": filename_val})
         if not details["contents"]: logger.warning(f"API {successful_api_name} (Struct 4): No usable links found in list.")
     
-    elif response_json.get("url") and response_json.get("filename"): # Simple dict with url and filename
+    elif response_json.get("url") and response_json.get("filename"):  # Simple dict with url and filename
         logger.info(f"Parsing as simple {{'url': ..., 'filename': ...}} from API: {successful_api_name}")
         details["title"] = response_json.get("filename")
         details["contents"].append({"url": response_json["url"], "filename": response_json.get("filename")})
 
     else: 
         logger.warning(f"Unhandled JSON structure from API {successful_api_name}. Attempting most generic parse: {str(response_json)[:300]}")
-        if isinstance(response_json, dict): # Last resort for dicts
+        if isinstance(response_json, dict):  # Last resort for dicts
             dl_url = response_json.get("url") or response_json.get("direct_link") or response_json.get("downloadLink")
             dl_name = response_json.get("filename") or response_json.get("name") or response_json.get("title", "Untitled_File_Generic")
             if dl_url:
@@ -388,7 +384,6 @@ def fetch_terabox_links(input_url: str):
 
     logger.info(f"Successfully processed. Found {len(details['contents'])} items. Title: {details['title']}")
     return details
-
 
 # === Helper Functions ===
 def format_size(size_in_bytes: int) -> str: 
@@ -511,33 +506,30 @@ async def view_config_command_logic(update_or_query):
     aria2_status_msg = "Enabled" if ARIA2_ENABLED and aria2_client else ("Disabled by config" if not ARIA2_ENABLED else "Not Connected/aria2p missing")
     
     config_text = (
-        f"**Current Bot Configuration:**\n\n"
-        f"**Dump Channel ID:** `{dump_display}`\n"
-        f"**Force Subscribe Channel:** `{fsub_display}`\n"
-        f"**Admin User IDs:** `{ADMIN_USER_IDS}`\n"
-        f"**Aria2c Integration:** `{aria2_status_msg}`\n"
+        f"<b>Current Bot Configuration:</b>\n\n"
+        f"<b>Dump Channel ID:</b> <code>{dump_display}</code>\n"
+        f"<b>Force Subscribe Channel:</b> <code>{fsub_display}</code>\n"
+        f"<b>Admin User IDs:</b> <code>{ADMIN_USER_IDS}</code>\n"
+        f"<b>Aria2c Integration:</b> <code>{aria2_status_msg}</code>\n"
     )
     if ARIA2_ENABLED and aria2_client:
-        config_text += f"  - RPC: `{ARIA2_RPC_HOST}:{ARIA2_RPC_PORT}`\n"
-        config_text += f"  - Aria2c Version: `{ARIA2_VERSION_STR}`\n"
-
+        config_text += f"  - RPC: <code>{ARIA2_RPC_HOST}:{ARIA2_RPC_PORT}</code>\n"
+        config_text += f"  - Aria2c Version: <code>{ARIA2_VERSION_STR}</code>\n"
 
     if isinstance(update_or_query, Update) and update_or_query.message: 
-        await update_or_query.message.reply_text(config_text, parse_mode=ParseMode.MARKDOWN)
+        await update_or_query.message.reply_text(config_text, parse_mode=ParseMode.HTML)
     elif hasattr(update_or_query, 'message') and update_or_query.message: 
         try:
-            await update_or_query.edit_message_text(config_text, parse_mode=ParseMode.MARKDOWN, reply_markup=settings_keyboard()) 
+            await update_or_query.edit_message_text(config_text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard()) 
         except Exception as e: 
             logger.warning(f"Failed to edit settings message: {e}. Sending new one.")
-            await update_or_query.message.reply_text(config_text, parse_mode=ParseMode.MARKDOWN)
-
+            await update_or_query.message.reply_text(config_text, parse_mode=ParseMode.HTML)
 
 async def view_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update.effective_user.id):
         await update.message.reply_text("You are not authorized to use this command.")
         return
     await view_config_command_logic(update)
-
 
 def settings_keyboard():
     keyboard = [
@@ -552,7 +544,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update.effective_user.id):
         await update.message.reply_text("You are not authorized to use this command.")
         return
-    await update.message.reply_text("⚙️ **Bot Settings Panel** ⚙️\nChoose an option:", reply_markup=settings_keyboard(), parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("⚙️ <b>Bot Settings Panel</b> ⚙️\nChoose an option:", reply_markup=settings_keyboard(), parse_mode=ParseMode.HTML)
 
 async def settings_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -566,85 +558,22 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
     if data == 'settings_view_config':
         await view_config_command_logic(query) 
     elif data == 'settings_set_dump_info':
-        await query.message.reply_text("To set the Dump Channel, use the command:\n`/setdump <channel_id>` (e.g., -100xxxxxxxxxx)\nOr use `/setdump none` to clear.", parse_mode=ParseMode.MARKDOWN)
+        await query.message.reply_text("To set the Dump Channel, use the command:\n<code>/setdump &lt;channel_id&gt;</code> (e.g., -100xxxxxxxxxx)\nOr use <code>/setdump none</code> to clear.", parse_mode=ParseMode.HTML)
     elif data == 'settings_set_fsub_info':
-        await query.message.reply_text("To set the Force Subscribe Channel, use the command:\n`/setfsub <@channel_username_or_id>`\nOr use `/setfsub none` to disable.", parse_mode=ParseMode.MARKDOWN)
+        await query.message.reply_text("To set the Force Subscribe Channel, use the command:\n<code>/setfsub &lt;@channel_username_or_id&gt;</code>\nOr use <code>/setfsub none</code> to disable.", parse_mode=ParseMode.HTML)
     elif data == 'settings_close':
         try:
             await query.message.delete()
         except Exception as e:
-            logger.warning(f"Failed to delete settings message: {e}")
-            await query.edit_message_text("Settings panel closed.", reply_markup=None) 
+            logger.warning(f"ientas
 
-# === User Command Handlers ===
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_subscription(update, context): return
-    user_name = update.effective_user.first_name
-    await update.message.reply_text(
-        f"Hello {user_name}!\n"
-        "I can help you download files from Terabox links.\n"
-        "Just send me a Terabox link, and I'll process it for you.\n\n"
-        "Type /help for more information."
-    )
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_subscription(update, context): return
-    help_text = (
-        "**How to use this bot:**\n\n"
-        "1. Send any valid Terabox link directly to me.\n"
-        "2. I will attempt to fetch the direct download link(s).\n"
-        "3. The file(s) will be downloaded and then processed.\n\n" 
-        "**Features:**\n"
-        "- Shows download progress.\n"
-        "- Attempts to handle single files and folders from Terabox.\n"
-        "- Uses Aria2c for faster downloads if configured and available.\n\n"
-        "If you encounter any issues, please ensure your link is correct and publicly accessible."
-    )
-    await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
-
-# === Robust Status Message Updater ===
-async def update_tg_status_message(status_msg_obj, text_to_send, current_context: ContextTypes.DEFAULT_TYPE, parse_mode_val=ParseMode.MARKDOWN):
-    if status_msg_obj is None: 
-        logger.warning("Attempted to update a None status message.")
-        return
-    
-    current_message_text = None
-    if hasattr(status_msg_obj, 'text_html') and parse_mode_val == ParseMode.HTML: # PTB stores HTML as text_html
-        current_message_text = status_msg_obj.text_html
-    elif hasattr(status_msg_obj, 'text_markdown_v2') and parse_mode_val == ParseMode.MARKDOWN_V2:
-        current_message_text = status_msg_obj.text_markdown_v2
-    elif hasattr(status_msg_obj, 'text'):
-        current_message_text = status_msg_obj.text
-
-    if current_message_text == text_to_send:
-        return
-    
-    now = time.time()
-    last_edit_time = current_context.chat_data.get(f"last_edit_time_{status_msg_obj.message_id}", 0)
-    
-    if now - last_edit_time < 1.5: 
-        await asyncio.sleep(1.5 - (now - last_edit_time)) 
-
-    while True:
-        try:
-            await status_msg_obj.edit_text(text_to_send, parse_mode=parse_mode_val)
-            current_context.chat_data[f"last_edit_time_{status_msg_obj.message_id}"] = time.time()
-            break 
-        except RetryAfter as e: 
-            logger.warning(f"RetryAfter: waiting for {e.retry_after} seconds before retrying status update for message {status_msg_obj.message_id}.")
-            await asyncio.sleep(e.retry_after)
-        except Exception as e:
-            logger.error(f"Failed to update status message {status_msg_obj.message_id}: {e}", exc_info=True)
-            break 
-
-# === Message Handler for Terabox Links ===
 async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE): 
     global DUMP_CHANNEL_ID, aria2_client, ARIA2_VERSION_STR
     
     # Initialize default values for finally block
     folder_title = "Unknown Content" 
     num_files = 0
-    status_msg = None # Initialize status_msg to None
+    status_msg = None  # Initialize status_msg to None
 
     if not update.message or not update.message.text: return
     if not await check_subscription(update, context): return
@@ -666,32 +595,30 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_info_for_status = f"<a href='tg://user?id={user_id_for_status}'>{user_first_name_for_status}</a> | ɪᴅ: {user_id_for_status}"
 
     # Define temp_dir as an absolute path
-    base_temp_dir_name = "temp_downloads" # Name of the temp directory
-    # Ensure the temp directory is relative to the script's location or a predefined base path
+    base_temp_dir_name = "temp_downloads"  # Name of the temp directory
     script_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in locals() else os.getcwd()
     temp_dir = os.path.join(script_dir, base_temp_dir_name)
     temp_dir = os.path.abspath(temp_dir)
 
-
     try:
-        os.makedirs(temp_dir, exist_ok=True) # Ensure temp_dir exists
+        os.makedirs(temp_dir, exist_ok=True)  # Ensure temp_dir exists
         logger.info(f"Using absolute temporary directory: {temp_dir}")
 
         loop = asyncio.get_event_loop()
         terabox_data = await loop.run_in_executor(None, fetch_terabox_links, url_to_process)
 
         if not terabox_data or not terabox_data.get("contents"):
-            await update_tg_status_message(status_msg, "❌ Could not retrieve download information. The link might be invalid, private, or the API failed.", context)
+            await update_tg_status_message(status_msg, f"❌ Could not retrieve download information. The link might be invalid, private, or the API failed.", context)
             return
 
-        num_files = len(terabox_data['contents']) # num_files is now defined
-        folder_title = terabox_data.get('title', 'Terabox Content') # folder_title is now defined
+        num_files = len(terabox_data['contents'])  # num_files is now defined
+        folder_title = terabox_data.get('title', 'Terabox Content')  # folder_title is now defined
         folder_title_escaped = html.escape(folder_title)
 
         await update_tg_status_message(status_msg,
-            f"✅ Link processed!\n"
-            f"<b>Title:</b> {folder_title_escaped}\n"
-            f"<b>Files Found:</b> {num_files}\n"
+            f"✅ Link processed!<br>"
+            f"<b>Title:</b> {folder_title_escaped}<br>"
+            f"<b>Files Found:</b> {num_files}<br>"
             f"Starting downloads...",
             context,
             parse_mode_val=ParseMode.HTML
@@ -723,7 +650,6 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await update_tg_status_message(status_msg, initial_aria_status_text, context, parse_mode_val=ParseMode.HTML)
                     
                     logger.info(f"Adding download to aria2: {filename} from {direct_url}. Output dir: {temp_dir}")
-                    # Ensure temp_dir is absolute when passing to Aria2
                     aria2_download = aria2_client.add_uris([direct_url], options={'dir': temp_dir, 'out': filename})
                     
                     last_status_update_time_loop = time.time() 
@@ -744,14 +670,14 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                             progress_bar_empty = "☆" * (10 - int(prog_percent / 10))
 
                             status_text_aria = (
-                                f"┏ ғɪʟᴇɴᴀᴍᴇ: {escaped_filename}\n"
-                                f"┠ [{progress_bar_filled}{progress_bar_empty}] {prog_percent:.2f}%\n"
-                                f"┠ ᴘʀᴏᴄᴇssᴇᴅ: {format_size(completed_len_bytes)} ᴏғ {format_size(total_len_bytes)}\n"
-                                f"┠ sᴛᴀᴛᴜs: 📥 Downloading\n"
-                                f"┠ ᴇɴɢɪɴᴇ: <b><u>Aria2c v{ARIA2_VERSION_STR}</u></b>\n"
-                                f"┠ sᴘᴇᴇᴅ: {dl_speed_str}\n"
-                                f"┠ ᴇᴛᴀ: {eta_str} | ᴇʟᴀᴘsᴇᴅ: {elapsed_minutes}m {elapsed_seconds}s\n"
-                                f"┖ ᴜsᴇʀ: {user_info_for_status}\n"
+                                f"┏ ғɪʟᴇɴᴀᴍᴇ: {escaped_filename}<br>"
+                                f"┠ [{progress_bar_filled}{progress_bar_empty}] {prog_percent:.2f}%<br>"
+                                f"┠ ᴘʀᴏᴄᴇssᴇᴅ: {format_size(completed_len_bytes)} ᴏғ {format_size(total_len_bytes)}<br>"
+                                f"┠ sᴛᴀᴛᴜs: 📥 Downloading<br>"
+                                f"┠ ᴇɴɢɪɴᴇ: <b><u>Aria2c v{ARIA2_VERSION_STR}</u></b><br>"
+                                f"┠ sᴘᴇᴇᴅ: {dl_speed_str}<br>"
+                                f"┠ ᴇᴛᴀ: {eta_str} | ᴇʟᴀᴘsᴇᴅ: {elapsed_minutes}m {elapsed_seconds}s<br>"
+                                f"┖ ᴜsᴇʀ: {user_info_for_status}<br>"
                             )
                             await update_tg_status_message(status_msg, status_text_aria, context, parse_mode_val=ParseMode.HTML)
                             last_status_update_time_loop = current_time_loop_inner
@@ -760,11 +686,10 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                     aria2_download.update() 
                     if aria2_download.is_complete:
                         if aria2_download.files:
-                            temp_file_path = aria2_download.files[0].path # This path should be absolute or correctly relative
+                            temp_file_path = aria2_download.files[0].path
                             logger.info(f"Aria2 download complete. Reported path: {temp_file_path}")
-                            # Ensure the path is absolute for os.path.exists and os.path.getsize
                             if not os.path.isabs(temp_file_path):
-                                temp_file_path = os.path.join(temp_dir, os.path.basename(temp_file_path)) # Reconstruct if relative
+                                temp_file_path = os.path.join(temp_dir, os.path.basename(temp_file_path))
                                 logger.info(f"Adjusted to absolute/known-relative path: {temp_file_path}")
                             downloaded_size_bytes = aria2_download.completed_length
                         else:
@@ -795,7 +720,7 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                     initial_httpx_status_text = f"Downloading <b>{escaped_filename}</b> ({i_loop+1}/{num_files}) via HTTPX..."
                     await update_tg_status_message(status_msg, initial_httpx_status_text, context, parse_mode_val=ParseMode.HTML)
                     
-                    temp_file_path = os.path.join(temp_dir, filename) # HTTPX downloads directly to this absolute path
+                    temp_file_path = os.path.join(temp_dir, filename)
                     last_status_update_time_loop = time.time()
                     
                     async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client: 
@@ -818,19 +743,18 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                                         progress_bar_empty = "☆" * (10 - int(percentage / 10))
 
                                         status_text_httpx = (
-                                            f"┏ ғɪʟᴇɴᴀᴍᴇ: {escaped_filename}\n"
-                                            f"┠ [{progress_bar_filled}{progress_bar_empty}] {percentage:.2f}%\n"
-                                            f"┠ ᴘʀᴏᴄᴇssᴇᴅ: {format_size(downloaded_size_bytes)} ᴏғ {format_size(total_size_bytes)}\n"
-                                            f"┠ sᴛᴀᴛᴜs: 📥 Downloading\n"
-                                            f"┠ ᴇɴɢɪɴᴇ: <b><u>HTTPX Fallback</u></b>\n"
-                                            f"┠ ᴇʟᴀᴘsᴇᴅ: {elapsed_minutes}m {elapsed_seconds}s\n"
-                                            f"┖ ᴜsᴇʀ: {user_info_for_status}\n"
+                                            f"┏ ғɪʟᴇɴᴀᴍᴇ: {escaped_filename}<br>"
+                                            f"┠ [{progress_bar_filled}{progress_bar_empty}] {percentage:.2f}%<br>"
+                                            f"┠ ᴘʀᴏᴄᴇssᴇᴅ: {format_size(downloaded_size_bytes)} ᴏғ {format_size(total_size_bytes)}<br>"
+                                            f"┠ sᴛᴀᴛᴜs: 📥 Downloading<br>"
+                                            f"┠ ᴇɴɢɪɴᴇ: <b><u>HTTPX Fallback</u></b><br>"
+                                            f"┠ ᴇʟᴀᴘsᴇᴅ: {elapsed_minutes}m {elapsed_seconds}s<br>"
+                                            f"┖ ᴜsᴇʀ: {user_info_for_status}<br>"
                                         )
                                         await update_tg_status_message(status_msg, status_text_httpx, context, parse_mode_val=ParseMode.HTML)
                                         last_status_update_time_loop = current_time_loop_inner
                     logger.info(f"HTTPX download complete for {filename}. Size: {downloaded_size_bytes}")
 
-                # Post-download checks and upload
                 logger.info(f"Checking for file at path: {temp_file_path}")
                 if not temp_file_path or not os.path.exists(temp_file_path):
                     logger.error(f"File {filename} was NOT FOUND at expected path after download ({download_method_used}). Checked path: {temp_file_path}")
@@ -838,7 +762,7 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                     continue
 
                 final_file_size_on_disk = os.path.getsize(temp_file_path)
-                upload_prep_text = f"✅ Downloaded <b>{escaped_filename}</b> ({format_size(final_file_size_on_disk)} via {download_method_used}).\nNow preparing to upload..."
+                upload_prep_text = f"✅ Downloaded <b>{escaped_filename}</b> ({format_size(final_file_size_on_disk)} via {download_method_used}).<br>Now preparing to upload..."
                 await update_tg_status_message(status_msg, upload_prep_text, context, parse_mode_val=ParseMode.HTML)
 
                 if final_file_size_on_disk > 2 * 1024 * 1024 * 1024: 
@@ -848,31 +772,28 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                          await context.bot.send_message(DUMP_CHANNEL_ID, f"Failed to upload: {escaped_filename} (too large: {format_size(final_file_size_on_disk)}) from user {user_id_for_status}. Link: {url_to_process}")
                     continue
 
-                # Caption uses Markdown
-                escaped_caption_filename = html.escape(filename).replace("_", r"\_").replace("*", r"\*").replace("`", r"\`") # Basic Markdown escape
-                escaped_caption_folder_title = html.escape(folder_title).replace("_", r"\_").replace("*", r"\*").replace("`", r"\`")
-
-                caption_text = f"**{escaped_caption_filename}**\n\n**Size:** {format_size(final_file_size_on_disk)}\n\n" 
-                if terabox_data.get("is_folder") and num_files > 1: caption_text += f"**Folder:** {escaped_caption_folder_title}\n"
+                # Caption uses HTML instead of MarkdownV2
+                caption_text = f"<b>{html.escape(filename)}</b><br><br><b>Size:</b> {format_size(final_file_size_on_disk)}<br><br>"
+                if terabox_data.get("is_folder") and num_files > 1:
+                    caption_text += f"<b>Folder:</b> {html.escape(folder_title)}<br>"
                 caption_text += f"Processed by @{context.bot.username}"
+
                 file_ext = os.path.splitext(filename)[1].lower()
                 sent_message = None
-                # Removed unsupported timeout arguments from send_kwargs
                 send_kwargs = {
                     "chat_id": target_chat_id_for_files, 
                     "caption": caption_text, 
-                    "filename": filename, # Use original filename for TG
-                    "parse_mode": ParseMode.MARKDOWN_V2
+                    "filename": filename,  # Use original filename for TG
+                    "parse_mode": ParseMode.HTML
                 }
                 
                 upload_status_text = (
-                    f"┏ ғɪʟᴇɴᴀᴍᴇ: {escaped_filename}\n"
-                    f"┠ sᴛᴀᴛᴜs: 📤 Uploading to Telegram...\n"
-                    f"┠ sɪᴢᴇ: {format_size(final_file_size_on_disk)}\n"
-                    f"┖ ᴜsᴇʀ: {user_info_for_status}\n"
+                    f"┏ ғɪʟᴇɴᴀᴍᴇ: {escaped_filename}<br>"
+                    f"┠ sᴛᴀᴛᴜs: 📤 Uploading to Telegram...<br>"
+                    f"┠ sɪᴢᴇ: {format_size(final_file_size_on_disk)}<br>"
+                    f"┖ ᴜsᴇʀ: {user_info_for_status}<br>"
                 )
                 await update_tg_status_message(status_msg, upload_status_text, context, parse_mode_val=ParseMode.HTML)
-
 
                 with open(temp_file_path, "rb") as doc_to_send:
                     if file_ext in ['.mp4', '.mkv', '.mov', '.avi', '.webm'] and final_file_size_on_disk < 2 * 1024 * 1024 * 1024: 
@@ -934,11 +855,10 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         if status_msg: await update_tg_status_message(status_msg, f"❌ Error processing link: {html.escape(str(e))}", context, parse_mode_val=ParseMode.HTML)
     except Exception as e: 
         logger.error(f"Unhandled error processing link {url_to_process}: {e}", exc_info=True)
-        if status_msg: await update_tg_status_message(status_msg, f"❌ An unexpected error occurred. Please try again later or check the link.\nError: {html.escape(str(e)[:100])}", context, parse_mode_val=ParseMode.HTML)
+        if status_msg: await update_tg_status_message(status_msg, f"❌ An unexpected error occurred. Please try again later or check the link.<br>Error: {html.escape(str(e)[:100])}", context, parse_mode_val=ParseMode.HTML)
     finally:
         if status_msg and context:
             context.chat_data.pop(f"last_edit_time_{status_msg.message_id}", None)
-
 
 # === Main Application Setup ===
 def run_bot():
@@ -955,7 +875,6 @@ def run_bot():
 
     application = application_builder.build()
 
-
     application.add_handler(CommandHandler("logs", logs_command))
     application.add_handler(CommandHandler("setdump", set_dump_command))
     application.add_handler(CommandHandler("setfsub", set_fsub_command))
@@ -970,7 +889,6 @@ def run_bot():
     application.run_polling(allowed_updates=Update.ALL_TYPES) 
 
 if __name__ == "__main__":
-    # Define temp_dir globally or ensure it's consistently created as absolute
     base_temp_dir_name = "temp_downloads"
     script_dir_main = os.path.dirname(os.path.abspath(__file__)) if "__file__" in locals() else os.getcwd()
     abs_temp_dir_main = os.path.join(script_dir_main, base_temp_dir_name)
@@ -982,9 +900,5 @@ if __name__ == "__main__":
             logger.info(f"Created temporary directory: {abs_temp_dir_main}")
         except OSError as e:
             logger.error(f"Could not create temporary directory {abs_temp_dir_main}: {e}.")
-            # Fallback or critical error if temp dir is essential
-    
-    # If handle_terabox_link needs this path, it's better to pass it or make it a discoverable constant
-    # For now, handle_terabox_link re-calculates it, which is fine.
     
     run_bot()
