@@ -6,3 +6,5 @@ python-dotenv
 pytz
 tgcrypto
 flask
+python-telegram-bot
+httpx
