@@ -93,12 +93,6 @@ VALID_DOMAINS = [
     'terabox.app', 'gibibox.com', 'goaibox.com', 'terasharelink.com', 
     'teraboxlink.com', 'terafileshare.com'
 ]
-
-TERABOX_API_URL_TEMPLATES = [
-    "https://teradlrobot.cheemsbackup.workers.dev/?url={}",
-    "https://teraboxdl.tellycloudapi.workers.dev/?url={}"
-]
-
 last_update_time = 0
 
 async def is_user_member(client, user_id):
@@ -178,94 +172,15 @@ async def handle_message(client: Client, message: Message):
         return
 
     encoded_url = urllib.parse.quote(url)
-    
-    download = None 
-    status_message = await message.reply_text("🔎 ᴘʀᴇᴘᴀʀɪɴɢ ᴅᴏᴡɴʟᴏᴀᴅ...")
+    final_url = f"https://teradlrobot.cheemsbackup.workers.dev/?url={encoded_url}"
 
-    for url_template in TERABOX_API_URL_TEMPLATES:
-        final_url = url_template.format(encoded_url)
-        logger.info(f"Attempting to add URI: {final_url}")
-        
-        current_download_attempt = None 
-        try:
-            # Add the URI to aria2
-            current_download_attempt = aria2.add_uris([final_url])
-            
-            # Poll for a short duration to confirm successful initiation
-            max_retries = 3  # Number of times to check
-            retry_delay = 5  # Seconds to wait between checks (total ~15s)
-            
-            for i in range(max_retries):
-                await asyncio.sleep(retry_delay)
-                current_download_attempt.update() # Refresh download status
-                
-                logger.debug(
-                    f"Polling attempt {i+1}/{max_retries} for {final_url}: "
-                    f"Status='{current_download_attempt.status}', "
-                    f"Name='{current_download_attempt.name}', "
-                    f"Size='{current_download_attempt.total_length}', "
-                    f"Error='{current_download_attempt.error_message}'"
-                )
+    download = aria2.add_uris([final_url])
+    status_message = await message.reply_text("sᴇɴᴅɪɴɢ ʏᴏᴜ ᴛʜᴇ ᴍᴇᴅɪᴀ...🤤")
 
-                if current_download_attempt.status in ['active', 'waiting'] and \
-                   current_download_attempt.total_length > 0 and \
-                   current_download_attempt.name:
-                    logger.info(f"Successfully initiated download for '{current_download_attempt.name}' from {final_url}")
-                    download = current_download_attempt 
-                    break 
-                elif current_download_attempt.is_complete and not current_download_attempt.has_failed:
-                    logger.info(f"Download from {final_url} completed during initial check.")
-                    download = current_download_attempt
-                    break 
-                elif current_download_attempt.status == 'error':
-                    logger.warning(
-                        f"Download from {final_url} failed. "
-                        f"Error Code: {current_download_attempt.error_code}, "
-                        f"Message: {current_download_attempt.error_message}"
-                    )
-                    aria2.remove([current_download_attempt], force=True, clean=True)
-                    current_download_attempt = None 
-                    break 
-            
-            if download: 
-                break 
-            
-            if current_download_attempt: # If polling finished, not an error, but no success
-                 logger.warning(f"Download from {final_url} did not properly initiate after polling. Status: {current_download_attempt.status}. Removing.")
-                 aria2.remove([current_download_attempt], force=True, clean=True)
-        except Exception as e:
-            logger.error(f"Exception while processing URI {final_url}: {e}", exc_info=True)
-            if current_download_attempt:
-                try:
-                    aria2.remove([current_download_attempt], force=True, clean=True)
-                except Exception as re:
-                    logger.error(f"Nested error removing download attempt for {final_url}: {re}")
-            continue 
-            
-    if not download:
-        await status_message.edit_text(
-            "❌ ᴄᴏᴜʟᴅ ɴᴏᴛ ɪɴɪᴛɪᴀᴛᴇ ᴅᴏᴡɴʟᴏᴀᴅ ғʀᴏᴍ ᴀᴠᴀɪʟᴀʙʟᴇ sᴏᴜʀᴄᴇs. "
-            "ᴛʜᴇ ʟɪɴᴋ ᴍɪɢʜᴛ ʙᴇ ɪɴᴠᴀʟɪᴅ ᴏʀ ᴀʟʟ sᴇʀᴠᴇʀs ᴀʀᴇ ᴅᴏᴡɴ."
-        )
-        return
+    start_time = datetime.now()
 
-    if not download or not download.files:
-        logger.error(f"Download failed or did not return file information. Download object: {download}")
-        await status_message.edit_text(
-            "❌ ᴅᴏᴡɴʟᴏᴀᴅ ᴄᴏᴍᴘʟᴇᴛᴇᴅ ʙᴜᴛ ғɪʟᴇ ɪɴғᴏʀᴍᴀᴛɪᴏɴ ɪs ᴍɪssɪɴɢ."
-        )
-        if download: # Attempt to clean up if download object exists
-            try:
-                aria2.remove([download], force=True, clean=True)
-            except Exception as e_rem:
-                logger.error(f"Error removing problematic download {download.gid if hasattr(download, 'gid') else 'N/A'}: {e_rem}")
-        return
-
-    await status_message.edit_text("sᴇɴᴅɪɴɢ ʏᴏᴜ ᴛʜᴇ ᴍᴇᴅɪᴀ...🤤")
-    start_time = datetime.now() # Set start time now that download is confirmed
-    
-    while not download.is_complete and not download.has_failed: # Add check for download failure
-        await asyncio.sleep(15) # Consider reducing sleep if updates are needed faster and FloodWait is handled
+    while not download.is_complete:
+        await asyncio.sleep(15)
         download.update()
         progress = download.progress
 
@@ -290,14 +205,6 @@ async def handle_message(client: Client, message: Message):
                 logger.error(f"Flood wait detected! Sleeping for {e.value} seconds")
                 await asyncio.sleep(e.value)
 
-    if download.has_failed:
-        logger.error(f"Download failed: {download.name}, Error: {download.error_message}")
-        await update_status_message(status_message, f"❌ Download failed: {download.name}")
-        try:
-            aria2.remove([download], force=True, clean=True)
-        except Exception as e_rem:
-            logger.error(f"Error removing failed download {download.gid}: {e_rem}")
-        return
     file_path = download.files[0].path
     caption = (
         f"✨ {download.name}\n"
@@ -395,12 +302,6 @@ async def handle_message(client: Client, message: Message):
             raise
 
     async def handle_upload():
-        nonlocal file_path # Ensure file_path is accessible
-        if not os.path.exists(file_path):
-            logger.error(f"File not found for upload: {file_path}. This might happen if download failed or file was removed prematurely.")
-            await update_status_message(status_message, f"❌ Error: Downloaded file missing: {os.path.basename(file_path if file_path else 'Unknown File')}")
-            return
-
         file_size = os.path.getsize(file_path)
         
         if file_size > SPLIT_SIZE:
@@ -425,44 +326,29 @@ async def handle_message(client: Client, message: Message):
                     )
                     
                     if USER_SESSION_STRING:
-                        sent_to_dump = await user.send_video(
+                        sent = await user.send_video(
                             DUMP_CHAT_ID, part, 
                             caption=part_caption,
                             progress=upload_progress
                         )
-                        if sent_to_dump:
-                            await app.copy_message(
-                                message.chat.id, DUMP_CHAT_ID, sent_to_dump.id
-                            )
-                        else:
-                            logger.error(f"Failed to send split part {part} to DUMP_CHAT_ID using user account. send_video returned None.")
-                            await update_status_message(status_message, f"❌ Error uploading part {os.path.basename(part)}.")
-                            # Consider whether to stop all uploads or just skip this part
+                        await app.copy_message(
+                            message.chat.id, DUMP_CHAT_ID, sent.id
+                        )
                     else:
-                        sent_to_dump = await client.send_video(
+                        sent = await client.send_video(
                             DUMP_CHAT_ID, part,
                             caption=part_caption,
                             progress=upload_progress
                         )
-                        if sent_to_dump:
-                            if sent_to_dump.video:
-                                await client.send_video(
-                                    message.chat.id, sent_to_dump.video.file_id,
-                                    caption=part_caption
-                                )
-                            else:
-                                logger.error(f"Message sent to DUMP_CHAT_ID for part {part} is not a video. Message: {sent_to_dump}")
-                                await update_status_message(status_message, f"❌ Error: Failed to confirm video upload for part {os.path.basename(part)}.")
-                        else:
-                            logger.error(f"Failed to send split part {part} to DUMP_CHAT_ID using bot account. send_video returned None.")
-                            await update_status_message(status_message, f"❌ Error uploading part {os.path.basename(part)}.")
+                        await client.send_video(
+                            message.chat.id, sent.video.file_id,
+                            caption=part_caption
+                        )
                     os.remove(part)
             finally:
                 for part in split_files:
-                    if os.path.exists(part):
-                        try: os.remove(part)
-                        except OSError as e: logger.error(f"Error removing split part {part}: {e}")
-
+                    try: os.remove(part)
+                    except: pass
         else:
             await update_status(
                 status_message,
@@ -471,40 +357,26 @@ async def handle_message(client: Client, message: Message):
             )
             
             if USER_SESSION_STRING:
-                sent_to_dump = await user.send_video(
+                sent = await user.send_video(
                     DUMP_CHAT_ID, file_path,
                     caption=caption,
                     progress=upload_progress
                 )
-                if sent_to_dump:
-                    await app.copy_message(
-                        message.chat.id, DUMP_CHAT_ID, sent_to_dump.id
-                    )
-                else:
-                    logger.error(f"Failed to send file {file_path} to DUMP_CHAT_ID using user account. send_video returned None.")
-                    await update_status_message(status_message, f"❌ Error uploading file {os.path.basename(file_path)}.")
+                await app.copy_message(
+                    message.chat.id, DUMP_CHAT_ID, sent.id
+                )
             else:
-                sent_to_dump = await client.send_video(
+                sent = await client.send_video(
                     DUMP_CHAT_ID, file_path,
                     caption=caption,
                     progress=upload_progress
                 )
-                if sent_to_dump:
-                    if sent_to_dump.video :
-                        await client.send_video(
-                            message.chat.id, sent_to_dump.video.file_id,
-                            caption=caption
-                        )
-                    else:
-                        logger.error(f"Message sent to DUMP_CHAT_ID for file {file_path} is not a video. Message: {sent_to_dump}")
-                        await update_status_message(status_message, f"❌ Error: Failed to confirm video upload for {os.path.basename(file_path)}.")
-                else:
-                    logger.error(f"Failed to send file {file_path} to DUMP_CHAT_ID using bot account. send_video returned None.")
-                    await update_status_message(status_message, f"❌ Error uploading file {os.path.basename(file_path)}.")
-
+                await client.send_video(
+                    message.chat.id, sent.video.file_id,
+                    caption=caption
+                )
         if os.path.exists(file_path):
-            try: os.remove(file_path)
-            except OSError as e: logger.error(f"Error removing original file {file_path}: {e}")
+            os.remove(file_path)
 
     start_time = datetime.now()
     await handle_upload()
