@@ -857,8 +857,14 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                 caption_text += f"Processed by @{context.bot.username}"
                 file_ext = os.path.splitext(filename)[1].lower()
                 sent_message = None
-                upload_timeout_seconds = max(120, min(3600, int(final_file_size_on_disk / (10 * 1024 * 1024 / 60) ) )) 
-
+                # Removed unsupported timeout arguments from send_kwargs
+                send_kwargs = {
+                    "chat_id": target_chat_id_for_files, 
+                    "caption": caption_text, 
+                    "filename": filename, # Use original filename for TG
+                    "parse_mode": ParseMode.MARKDOWN_V2
+                }
+                
                 upload_status_text = (
                     f"┏ ғɪʟᴇɴᴀᴍᴇ: {escaped_filename}\n"
                     f"┠ sᴛᴀᴛᴜs: 📤 Uploading to Telegram...\n"
@@ -869,11 +875,6 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
                 with open(temp_file_path, "rb") as doc_to_send:
-                    send_kwargs = {
-                        "chat_id": target_chat_id_for_files, "caption": caption_text, "filename": filename, # Use original filename for TG
-                        "parse_mode": ParseMode.MARKDOWN_V2, "request_timeout": upload_timeout_seconds + 60, 
-                        "connect_timeout": 30, "read_timeout": upload_timeout_seconds
-                    }
                     if file_ext in ['.mp4', '.mkv', '.mov', '.avi', '.webm'] and final_file_size_on_disk < 2 * 1024 * 1024 * 1024: 
                         sent_message = await context.bot.send_video(video=doc_to_send, supports_streaming=True, **send_kwargs)
                     elif file_ext in ['.mp3', '.ogg', '.wav', '.flac', '.m4a'] and final_file_size_on_disk < 2 * 1024 * 1024 * 1024: 
@@ -922,7 +923,7 @@ async def handle_terabox_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                     except Exception as e_aria_clean:
                         logger.warning(f"Could not clean up GID {aria2_download.gid if 'aria2_download' in locals() and aria2_download else 'N/A'} from Aria2: {e_aria_clean}")
 
-        final_completion_message = f"🏁 All {num_files} file(s) from '{html.escape(folder_title)}' processed." # folder_title is now defined
+        final_completion_message = f"🏁 All {num_files} file(s) from '{html.escape(folder_title)}' processed." 
         if status_msg and status_msg.chat_id == update.message.chat_id: 
             await update_tg_status_message(status_msg, final_completion_message, context, parse_mode_val=ParseMode.HTML)
         else: 
@@ -987,3 +988,4 @@ if __name__ == "__main__":
     # For now, handle_terabox_link re-calculates it, which is fine.
     
     run_bot()
+" in the Canv
